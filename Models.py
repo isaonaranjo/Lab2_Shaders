@@ -1,8 +1,10 @@
+# ===============================================================
 # Maria Isabel Ortiz Naranjo
+# Carne: 18176
 # Graficas por computadora
-# SR4 - Flat shading
-# 18176
+# Lab 2 - Shaders
 # Basado en codigo proporcionado en clase por Dennis 
+# ===============================================================
 
 import struct
 from Obj import Obj
@@ -19,7 +21,7 @@ def dword(c):
     return struct.pack('=l', c)
 
 def color(r, g, b):
-    return bytes([b, g, r])
+    return bytes([int(b * 255), int(g * 255), int(r * 255)])
 def normalizeColorArray(colors_array):
     return [round(i*255) for i in colors_array]
 
@@ -93,8 +95,7 @@ def barycentric(A, B, C, P):
     return w, v, u
 
 
-NEGRO = color(0,0,0)
-BLANCO = color(1,1,1)
+PLANET = 'Planeta'
 
 
 class Render(object):
@@ -139,7 +140,6 @@ class Render(object):
     def glClearColor(self, r=1, g=1, b=1):
         normalized = normalizeColorArray([r,g,b])
         clearColor = color(normalized[0], normalized[1], normalized[2])
-
         self.pixels = [
             [clearColor for x in range(self.width)] for y in range(self.height)
         ]
@@ -167,52 +167,75 @@ class Render(object):
         normalized = normalizeColorArray([r,g,b])
         self.color = color(normalized[0], normalized[1], normalized[2])
 
-    def triangle1(self, A, B, C, color=None):
-        if A.y > B.y:
-            A, B = B, A
-        if A.y > C.y:
-            A, C = C, A
-        if B.y > C.y:
-            B, C = C, B
+    def triangle(self, A, B, C, normals):
+        xmin, xmax, ymin, ymax = bbox(A, B, C)
 
-        dx_ac = C.x - A.x
-        dy_ac = C.y - A.y
+        for x in range(xmin, xmax + 1):
+            for y in range(ymin, ymax + 1):
+                P = V2(x, y)
+                w, v, u = barycentric(A, B, C, P)
+                if w < 0 or v < 0 or u < 0:
+                    continue
 
-        if dy_ac == 0:
-            return
+                z = A.z * u + B.z * v + C.z * w
 
-        mi_ac = dx_ac/dy_ac
+                r, g, b = self.shader(
+                    x,
+                    y,
+                    barycentricCoords = (u, v, w),
+                    normals=normals
+                )
 
-        dx_ab = B.x - A.x
-        dy_ab = B.y - A.y
+                shader_color = color(r, g, b)
 
-        if dy_ab != 0:
-            mi_ab = dx_ab/dy_ab
+                if z > self.zbuffer[x][y]:
+                    self.point(x, y, shader_color)
+                    self.zbuffer[x][y] = z
 
-            for y in range(A.y, B.y + 1):
-                xi = round(A.x - mi_ac * (A.y - y))
-                xf = round(A.x - mi_ab * (A.y - y))
+    def check_ellipse(self, x, y, a, b):
+        return round((x ** 2) * (b ** 2)) + ((y ** 2) * (a ** 2)) <= round(a ** 2) * (
+            b ** 2
+        )
 
-                if xi > xf:
-                    xi, xf = xf, xi
-                for x in range(xi, xf + 1):
-                    self.point(x, y, color)
+    def shader(self, x=0, y=0, barycentricCoords = (), normals=()):
+        shader_color = 0, 0, 0
+        current_shape = self.shape 
+        u, v, w = barycentricCoords
+        na, nb, nc = normals
 
-        dx_bc = C.x - B.x
-        dy_bc = C.y - B.y
+        if current_shape == PLANET:
+            if y < 280 or y > 520:
+                shader_color = 156, 152, 164
+            elif y < 320 or y > 480:
+                shader_color = 146, 160, 180
+            elif y < 360 or y > 420:
+                shader_color = 105, 145, 170
+            else:
+                shader_color = 136, 190, 222
 
-        if dy_bc:
+        b, g, r = shader_color
 
-            mi_bc = dx_bc/dy_bc
+        b /= 255
+        g /= 255
+        r /= 255
 
-            for y in range(B.y, C.y + 1):
-                xi = round(A.x - mi_ac * (A.y - y))
-                xf = round(B.x - mi_bc * (B.y - y))
+        nx = na[0] * u + nb[0] * v + nc[0] * w
+        ny = na[1] * u + nb[1] * v + nc[1] * w
+        nz = na[2] * u + nb[2] * v + nc[2] * w
 
-                if xi > xf:
-                    xi, xf = xf, xi
-                for x in range(xi, xf + 1):
-                    self.point(x, y, color)
+        normal = V3(nx, ny, nz)
+        light = V3(0.700, 0.700, 0.750)
+
+        intensity = dot(norm(normal), norm(light))
+
+        b *= intensity
+        g *= intensity
+        r *= intensity
+
+        if intensity > 0:
+            return r, g, b
+        else:
+            return 0,0,0
 
     def glLine(self, x0, y0, x1, y1): # NDC
         #x0 = round(( x0 + 1) * (self.vpWidth  / 2 ) + self.vpX)
@@ -291,10 +314,10 @@ class Render(object):
                     y += 1 if y0 < y1 else -1
                     limit += 1
 
-    def loadModel(self, filename, translate=[0,0], scale=[1,1]):
+    def loadModel(self, filename="default.obj", translate=[0, 0], scale=[1, 1], shape=None):
         model = Obj(filename)
+        self.shape = shape
 
-        light = V3(0, 0, 1)
 
         for face in model.faces:
             vcount = len(face)
@@ -324,14 +347,11 @@ class Render(object):
                 b = V3(x2, y2, z2)
                 c = V3(x3, y3, z3)
 
-                normal = cross(sub(b, a), sub(c, a))
-                intensity = dot(norm(normal), norm(light))
-                grey = round(255 * intensity)
-                if grey < 0:
-                    continue
+                vn0 = model.normals[face1]
+                vn1 = model.normals[face2]
+                vn2 = model.normals[face3]
 
-                intensity_color = color(grey, grey, grey)
-                self.triangle(a, b, c, intensity_color)
+                self.triangle(a, b, c, normals=(vn0, vn1, vn2))
 
             else:
                 face1 = face[0][0] - 1
@@ -365,33 +385,13 @@ class Render(object):
                 c = V3(x3, y3, z3)
                 d = V3(x4, y4, z4)
 
-                normal = cross(sub(b, a), sub(c, a))
+                vn0 = model.normals[face1]
+                vn1 = model.normals[face2]
+                vn2 = model.normals[face3]
+                vn3 = model.normals[face4]
 
-                intensity = dot(norm(normal), norm(light))
-                grey = round(255 * intensity)
-                if grey < 0:
-                    continue
-
-                intensity_color = color(grey, grey, grey)
-
-                self.triangle(a, b, c, intensity_color)
-                self.triangle(a, c, d, intensity_color)
-    
-    def triangle(self, A, B, C, color):
-        xmin, xmax, ymin, ymax = bbox(A, B, C)
-
-        for x in range(xmin, xmax + 1):
-            for y in range(ymin, ymax + 1):
-                P = V2(x, y)
-                w, v, u = barycentric(A, B, C, P)
-                if w < 0 or v < 0 or u < 0:
-                    continue
-
-                z = A.z * w + B.z * v + C.z * u
-
-                if z > self.zbuffer[x][y]:
-                    self.point(x, y, color)
-                    self.zbuffer[x][y] = z
+                self.triangle(a, b, c, normals=(vn0, vn1, vn2))
+                self.triangle(a, c, d, normals=(vn0, vn2, vn3))
 
     def glFinish(self, filename='output.bmp'):
         f = open(filename, 'wb')
@@ -400,8 +400,6 @@ class Render(object):
         f.write(dword(14 + 40 + self.width * self.height * 3))
         f.write(dword(0))
         f.write(dword(14 + 40))
-
-        # image header
         f.write(dword(40))
         f.write(dword(self.width))
         f.write(dword(self.height))
@@ -421,6 +419,5 @@ class Render(object):
         f.close()
 
 r = Render()
-# r.loadModel('./models/chicken.obj', (378,189), (378,378) )
-r.loadModel('./models/chicken.obj', translate=(700, 300, 200), scale = (300, 300, 350) )
-r.glFinish('output.bmp')
+r.loadModel('./models/sphere.obj', translate=(400, 400, 0), scale=(250, 250, 350), shape=PLANET)
+r.glFinish('planetaIsa.bmp')
